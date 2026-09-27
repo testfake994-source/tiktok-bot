@@ -1,7 +1,6 @@
 import os
 import logging
 import requests
-from io import BytesIO
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
@@ -22,24 +21,24 @@ async def download_tiktok(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = await update.message.reply_text("⏳ Processing video, please wait...")
 
     try:
-        api_url = f"https://www.tikwm.com/api/?url={url}"
-        headers = {
+        # Resolve short URL if necessary
+        session = requests.Session()
+        session.headers.update({
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        }
+        })
         
-        response = requests.get(api_url, headers=headers, timeout=15)
+        # TikWM API Request
+        api_url = f"https://www.tikwm.com/api/?url={url}"
+        response = session.get(api_url, timeout=15)
         res = response.json()
 
         if res.get("code") == 0:
             video_url = res["data"]["play"]
             title = res["data"].get("title", "TikTok Video")
 
-            video_data = requests.get(video_url, headers=headers, timeout=30).content
-            video_file = BytesIO(video_data)
-            video_file.name = "tiktok_video.mp4"
-
+            # Direct video URL stream send to avoid server memory overload
             await update.message.reply_video(
-                video=video_file,
+                video=video_url,
                 caption=f"✨ {title}\n\nDownloaded via TikTok Bot"
             )
             await msg.delete()
