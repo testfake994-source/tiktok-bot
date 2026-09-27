@@ -1,111 +1,67 @@
 import os
+import logging
 import requests
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from io import BytesIO
+from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
-TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+# Logging setup
+logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
 
-def resolve_url(url: str) -> str:
-    try:
-        res = requests.head(url, allow_redirects=True, timeout=10)
-        return res.url
-    except Exception:
-        return url
+TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 
-def fetch_tikwm_data(tiktok_url: str):
-    clean_url = resolve_url(tiktok_url)
-    api_url = "https://www.tikwm.com/api/"
-    params = {"url": clean_url, "hd": 1}
-    try:
-        response = requests.get(api_url, params=params, timeout=15)
-        if response.status_code == 200:
-            res_json = response.json()
-            if res_json.get("code") == 0:
-                return res_json.get("data")
-    except Exception:
-        pass
-    return None
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("Welcome! Send me any TikTok video link, and I will download it without watermark.")
 
-async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("👋 Hello! Send me any TikTok video link.")
-
-async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-    if not ("tiktok.com" in text):
+async def download_tiktok(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    url = update.message.text.strip()
+    
+    if "tiktok.com" not in url:
         return
 
-    status_msg = await update.message.reply_text("⚡ Analyzing TikTok link...")
-    data = fetch_tikwm_data(text)
+    msg = await update.message.reply_text("⏳ Processing video, please wait...")
 
-    if not data:
-        await status_msg.edit_text("❌ Data not found or invalid link.")
-        return
+    try:
+        api_url = f"https://www.tikwm.com/api/?url={url}"
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        }
+        
+        response = requests.get(api_url, headers=headers, timeout=15)
+        res = response.json()
 
-    author = data.get("author", {})
-    nickname = author.get("nickname", "Unknown")
-    unique_id = author.get("unique_id", "user")
-    region = data.get("region", "US")
-    title = data.get("title", "No Title")
-    music_info = data.get("music_info", {})
-    music_title = music_info.get("title", "original sound")
-    
-    views = data.get("play_count", 0)
-    likes = data.get("digg_count", 0)
-    comments = data.get("comment_count", 0)
-    shares = data.get("share_count", 0)
-    downloads = data.get("download_count", 0)
-    video_id = data.get("id", "N/A")
+        if res.get("code") == 0:
+            video_url = res["data"]["play"]
+            title = res["data"].get("title", "TikTok Video")
 
-    caption = (
-        f"📹 **VIDEO • ANALYTICS**\n\n"
-        f"👤 **{nickname}** | 🆔 `{video_id}`\n"
-        f"📝 {title}\n"
-        f"🎵 {music_title}\n\n"
-        f"📊 **Statistics**\n"
-        f"• 👁 {views:,} Views\n"
-        f"• 💖 {likes:,} Likes\n"
-        f"• 💬 {comments:,} Comments\n"
-        f"• 🔁 {shares:,} Shares\n"
-        f"• 📥 {downloads:,} Downloads\n\n"
-        f"ℹ **Info**\n"
-        f"• 🌐 Region | {region}\n"
-        f"• 👻 Shadow ban | No\n"
-    )
+            video_data = requests.get(video_url, headers=headers, timeout=30).content
+            video_file = BytesIO(video_data)
+            video_file.name = "tiktok_video.mp4"
 
-    keyboard = [
-        [
-            InlineKeyboardButton("576p", callback_data="dl_576"),
-            InlineKeyboardButton("720p", callback_data="dl_720"),
-            InlineKeyboardButton("1080p", callback_data="dl_1080")
-        ],
-        [
-            InlineKeyboardButton("Original", callback_data="dl_orig"),
-            InlineKeyboardButton("MP3", callback_data="dl_mp3"),
-            InlineKeyboardButton("Cover", callback_data="dl_cover")
-        ],
-        [
-            InlineKeyboardButton("Recheck", callback_data="recheck"),
-            InlineKeyboardButton("Shazam", callback_data="shazam")
-        ],
-        [
-            InlineKeyboardButton(f"👤 {unique_id}", url=f"https://www.tiktok.com/@{unique_id}")
-        ]
-    ]
-    
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    cover_url = data.get("cover")
-    
-    if cover_url:
-        await update.message.reply_photo(photo=cover_url, caption=caption, parse_mode="Markdown", reply_markup=reply_markup)
-        await status_msg.delete()
-    else:
-        await status_msg.edit_text(caption, parse_mode="Markdown", reply_markup=reply_markup)
+            await update.message.reply_video(
+                video=video_file,
+                caption=f"✨ {title}\n\nDownloaded via TikTok Bot"
+            )
+            await msg.delete()
+        else:
+            await msg.edit_text("❌ Video not found. Please check if the link is valid.")
+
+    except Exception as e:
+        logging.error(f"Error downloading video: {e}")
+        await msg.edit_text("❌ Failed to download video. Please try again later.")
 
 def main():
-    app = Application.builder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(CommandHandler("start", start_command))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+    if not TOKEN:
+        logging.error("TELEGRAM_BOT_TOKEN not found!")
+        return
+
+    app = Application.builder().token(TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, download_tiktok))
+    
+    logging.info("Bot execution started...")
     app.run_polling()
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     main()
+
